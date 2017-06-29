@@ -97,10 +97,6 @@ reset_iptables() {
     local chains=$(iptables -w -S | awk '/^-N proxflix/ { print $2 }')
     local x
 
-    iptables -w -P INPUT ACCEPT
-    iptables -w -P FORWARD ACCEPT
-    iptables -w -P OUTPUT ACCEPT
-
     for x in $chains; do
         noout iptables -w -F $x
         iptables -w -S | grep -- "-j ${x}\([[:space:]]\|$\)" | tac | \
@@ -112,10 +108,6 @@ reset_iptables() {
 reset_ip6tables() {
     local chains=$(ip6tables -w -S | awk '/^-N proxflix/ { print $2 }')
     local x
-
-    ip6tables -w -P INPUT ACCEPT
-    ip6tables -w -P FORWARD ACCEPT
-    ip6tables -w -P OUTPUT ACCEPT
 
     for x in $chains; do
         noout ip6tables -w -F $x
@@ -138,33 +130,18 @@ prepare_iptables() {
     iptables -w -A proxflix-input -j proxflix-filter
     iptables -w -A proxflix-forward -o docker0 -j proxflix-filter
 
-    # accept loopback connections
-    iptables -w -A proxflix-input -i lo -j ACCEPT
-    # accept already established connections
-    iptables -w -A proxflix-input -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-    # drop invalid packets
-    iptables -w -A proxflix-input -m conntrack --ctstate INVALID -j DROP
-    # allow pings
-    iptables -w -A proxflix-input -p icmp --icmp-type 8 -m conntrack --ctstate NEW -j ACCEPT
+    # block our services for all IPs
+    iptables -w -A proxflix-input ! -i lo -p tcp --dport 443 -j REJECT tcp-reset
+    iptables -w -A proxflix-input ! -i lo -p tcp --dport 80 -j REJECT tcp-reset
+    iptables -w -A proxflix-input ! -l lo -p tcp --dport 53 -j REJECT tcp-reset
+    iptables -w -A proxflix-input ! -l lo -p udp --dport 53 -j REJECT --reject-with icmp-port-unreachable
 
-    # allow sshd
-    iptables -w -A proxflix-input -p tcp --syn -m conntrack --ctstate NEW --dport 22 -j ACCEPT
-
-    # reject any other tcp and udp
-    iptables -w -A proxflix-input -p tcp -j REJECT --reject-with tcp-reset
-    iptables -w -A proxflix-input -p udp -j REJECT --reject-with icmp-port-unreachable
-    # reject any other protocols
-    iptables -w -A proxflix-input -j REJECT --reject-with icmp-proto-unreachable
-
-    # because docker is using DNAT to forward the connection to the container, we
-    # can not filter it via INPUT table. we need to use FORWARD instead, but this
-    # can break the internet connection of the container. as a solution, we only
-    # REJECT the ports we forward to docker.
     iptables -w -A proxflix-forward -o docker0 -p tcp --dport 443 -j REJECT --reject-with tcp-reset
     iptables -w -A proxflix-forward -o docker0 -p tcp --dport 80 -j REJECT --reject-with tcp-reset
     iptables -w -A proxflix-forward -o docker0 -p tcp --dport 53 -j REJECT --reject-with tcp-reset
     iptables -w -A proxflix-forward -o docker0 -p udp --dport 53 -j REJECT --reject-with icmp-port-unreachable
 
+    # unblock our services for the allowed IPs
     if [[ -f /etc/proxflix/allowed_ips ]]; then
         for x in $(cat /etc/proxflix/allowed_ips); do
             iptables -w -A proxflix-filter -s "$x" -j ACCEPT
@@ -184,21 +161,18 @@ prepare_ip6tables() {
     ip6tables -w -A proxflix-input -j proxflix-filter
     ip6tables -w -A proxflix-forward -o docker0 -j proxflix-filter
 
-    ip6tables -w -A proxflix-input -i lo -j ACCEPT
-    ip6tables -w -A proxflix-input -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-    ip6tables -w -A proxflix-input -m conntrack --ctstate INVALID -j DROP
-    ip6tables -A INPUT -p ipv6-icmp --icmpv6-type 128 -m conntrack --ctstate NEW -j ACCEPT
-
-    ip6tables -w -A proxflix-input -p tcp --syn -m conntrack --ctstate NEW --dport 22 -j ACCEPT
-
-    ip6tables -w -A proxflix-input -p tcp -j REJECT --reject-with tcp-reset
-    ip6tables -w -A proxflix-input -p udp -j REJECT --reject-with icmp6-adm-prohibited
-    ip6tables -w -A proxflix-input -j REJECT --reject-with icmp6-adm-prohibited
+    # block our services for all IPs
+    ip6tables -w -A proxflix-input ! -i lo -p tcp --dport 443 -j REJECT tcp-reset
+    ip6tables -w -A proxflix-input ! -i lo -p tcp --dport 80 -j REJECT tcp-reset
+    ip6tables -w -A proxflix-input ! -l lo -p tcp --dport 53 -j REJECT tcp-reset
+    ip6tables -w -A proxflix-input ! -l lo -p udp --dport 53 -j REJECT --reject-with icmp6-adm-prohibited
 
     ip6tables -w -A proxflix-forward -o docker0 -p tcp --dport 443 -j REJECT --reject-with tcp-reset
     ip6tables -w -A proxflix-forward -o docker0 -p tcp --dport 80 -j REJECT --reject-with tcp-reset
     ip6tables -w -A proxflix-forward -o docker0 -p tcp --dport 53 -j REJECT --reject-with tcp-reset
     ip6tables -w -A proxflix-forward -o docker0 -p udp --dport 53 -j REJECT --reject-with icmp6-adm-prohibited
+
+    # TODO: parse IPv6 from allowed_ips and unblock them
 }
 
 start_container() {
@@ -224,11 +198,8 @@ start_container() {
 stop_container() {
     is_running proxflix || return 1
     docker stop proxflix
-
-    if is_true "${config[iptables]}"; then
-        reset_iptables
-        reset_ip6tables
-    fi
+    reset_iptables
+    reset_ip6tables
 }
 
 start() {
