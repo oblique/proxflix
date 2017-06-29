@@ -26,6 +26,9 @@ ln -snf $PWD/proxflix /usr/local/bin/proxflix
 
 ## Usage
 
+ProxFlix needs to be installed on a server to the region you are interested.
+After you start it, change the DNS of your TV to the IP of your server.
+
 ### Start ProxFlix and enable it on boot
 
 ```bash
