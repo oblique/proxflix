@@ -1,9 +1,6 @@
 FROM alpine
 
-RUN apk add --no-cache supervisor shadow bind-tools iptables sniproxy dnsmasq
-
-RUN adduser -D -s /bin/sh user && \
-    passwd -d user
+RUN apk add --no-cache supervisor bind-tools iptables sniproxy dnsmasq
 
 ADD instl /usr/local/bin/
 RUN mkdir -p /opt/proxflix
