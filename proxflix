@@ -63,10 +63,6 @@ noout() {
     "$@" > /dev/null 2>&1
 }
 
-to_upper() {
-    echo "$@" | tr 'a-z' 'A-Z'
-}
-
 is_running() {
     docker inspect -f '{{.State.Running}}' "$1" 2> /dev/null | grep -qE '^true$'
 }
@@ -143,6 +139,7 @@ prepare_iptables() {
 
     # unblock our services for the allowed IPs
     if [[ -f /etc/proxflix/allowed_ips ]]; then
+        local x
         for x in $(cat /etc/proxflix/allowed_ips); do
             iptables -w -A proxflix-filter -s "$x" -j ACCEPT
         done
