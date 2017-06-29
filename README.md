@@ -42,7 +42,7 @@ proxflix enable
 proxflix status
 ```
 
-### Allow an IP to use our smart DNS
+### Allow an IP to use your smart DNS
 
 ```bash
 proxflix add-ip 1.2.3.4
