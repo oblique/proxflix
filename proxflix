@@ -179,7 +179,7 @@ start_container() {
     local x
 
     if is_running proxflix; then
-        echo "Container is already running"
+        echo_err 'ProxFlix is not already running.'
         return 1
     fi
 
@@ -231,6 +231,11 @@ update_allowed_ips_file() {
 }
 
 add_ip() {
+    if ! is_running proxflix; then
+        echo_err 'ProxFlix is not running.'
+        return 1
+    fi
+
     if ! is_true "${config[iptables]}"; then
         echo_err "This command is disabled because you have iptables config option as false."
         return 1
@@ -245,6 +250,11 @@ add_ip() {
 }
 
 rm_ip() {
+    if ! is_running proxflix; then
+        echo_err 'ProxFlix is not running.'
+        return 1
+    fi
+
     if ! is_true "${config[iptables]}"; then
         echo_err "This command is disabled because you have iptables config option as false."
         return 1
@@ -259,6 +269,11 @@ rm_ip() {
 }
 
 list_ips() {
+    if ! is_running proxflix; then
+        echo_err 'ProxFlix is not running.'
+        return 1
+    fi
+
     if ! is_true "${config[iptables]}"; then
         echo_err "This command is disabled because you have iptables config option as false."
         return 1
