@@ -1,0 +1,386 @@
+#!/bin/bash
+
+PROG="$(basename $0)"
+PROG_DIR="$(readlink -f "$(dirname "${BASH_SOURCE[0]}")")"
+
+typeset -A config
+config=(
+    [dns]='8.8.8.8,8.8.4.4'
+    [iptables]='true'
+)
+
+usage() {
+    echo "Usage: $PROG <command>"
+    echo
+    echo "Commands:"
+    echo "  help                            Show this help"
+    echo "  start                           Start proxflix"
+    echo "  stop                            Stop proxflix"
+    echo "  restart                         Restart proxflix"
+    echo "  enable                          Enable proxflix service (i.e. starts on boot)"
+    echo "  disable                         Disable proxflix service"
+    echo "  add-ip                          Add allowed IP"
+    echo "  rm-ip                           Remove allowed IP"
+    echo "  list-ips                        List IPs"
+    echo "  config-get [<option>]           Get value of a config option"
+    echo "  config-set <option> [<value>]   Set value to a config option"
+    echo
+    echo "Config options:"
+    echo "  dns <ip-list>           DNS servers (default: 8.8.8.8,8.8.4.4)"
+    echo "  iptables <true|false>   Set iptables rules (default: true)"
+}
+
+load_config() {
+    local line
+    local var
+
+    if [[ -f /etc/proxflix/config ]]; then
+        while read line; do
+            if echo "$line" | grep -qE '^[_a-zA-Z][-_a-zA-Z0-9]+='; then
+                var="${line%%=*}"
+                config[$var]="${line#*=}"
+            fi
+        done < /etc/proxflix/config
+    fi
+}
+
+save_config() {
+    local var
+    for var in "${!config[@]}"; do
+        echo "${var}=${config[$var]}"
+    done > /etc/proxflix/config
+}
+
+is_true() {
+    echo "$1" | grep -qiE '^[[:space:]]*(true|t|yes|y|1)[[:space:]]*$'
+}
+
+echo_err() {
+    echo "$@" >&2
+}
+
+noout() {
+    "$@" > /dev/null 2>&1
+}
+
+to_upper() {
+    echo "$@" | tr 'a-z' 'A-Z'
+}
+
+is_running() {
+    docker inspect -f '{{.State.Running}}' "$1" 2> /dev/null | grep -qE '^true$'
+}
+
+is_container() {
+    [[ -n "$(docker inspect -f '{{.State.Running}}' "$1" 2> /dev/null)" ]]
+}
+
+create_systemd_service() {
+    local service="[Unit]
+After=docker.service
+Requires=docker.service
+
+[Service]
+ExecStart=$PROG_DIR/proxflix start-container
+ExecStop=$PROG_DIR/proxflix stop-container
+
+[Install]
+WantedBy=multi-user.target"
+
+    if ! echo "$service" | cmp -s - /etc/systemd/system/proxflix.service; then
+        echo "$service" > /etc/systemd/system/proxflix.service
+        systemctl daemon-reload
+    fi
+}
+
+reset_iptables() {
+    local chains=$(iptables -w -S | awk '/^-N proxflix/ { print $2 }')
+    local x
+
+    iptables -w -P INPUT ACCEPT
+    iptables -w -P FORWARD ACCEPT
+    iptables -w -P OUTPUT ACCEPT
+
+    for x in $chains; do
+        noout iptables -w -F $x
+        iptables -w -S | grep -- "-j ${x}\([[:space:]]\|$\)" | tac | \
+            awk '{ $1 = "-D"; system("iptables -w "$0) }'
+        iptables -w -X $x
+    done
+}
+
+reset_ip6tables() {
+    local chains=$(ip6tables -w -S | awk '/^-N proxflix/ { print $2 }')
+    local x
+
+    ip6tables -w -P INPUT ACCEPT
+    ip6tables -w -P FORWARD ACCEPT
+    ip6tables -w -P OUTPUT ACCEPT
+
+    for x in $chains; do
+        noout ip6tables -w -F $x
+        ip6tables -w -S | grep -- "-j ${x}\([[:space:]]\|$\)" | tac | \
+            awk '{ $1 = "-D"; system("ip6tables -w "$0) }'
+        ip6tables -w -X $x
+    done
+}
+
+prepare_iptables() {
+    reset_iptables
+
+    # create chains
+    iptables -w -N proxflix-input
+    iptables -w -N proxflix-forward
+    iptables -w -N proxflix-filter
+
+    iptables -w -I INPUT -j proxflix-input
+    iptables -w -I FORWARD -j proxflix-forward
+    iptables -w -A proxflix-input -j proxflix-filter
+    iptables -w -A proxflix-forward -o docker0 -j proxflix-filter
+
+    # accept loopback connections
+    iptables -w -A proxflix-input -i lo -j ACCEPT
+    # accept already established connections
+    iptables -w -A proxflix-input -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    # drop invalid packets
+    iptables -w -A proxflix-input -m conntrack --ctstate INVALID -j DROP
+    # allow pings
+    iptables -w -A proxflix-input -p icmp --icmp-type 8 -m conntrack --ctstate NEW -j ACCEPT
+
+    # allow sshd
+    iptables -w -A proxflix-input -p tcp --syn -m conntrack --ctstate NEW --dport 22 -j ACCEPT
+
+    # reject any other tcp and udp
+    iptables -w -A proxflix-input -p tcp -j REJECT --reject-with tcp-reset
+    iptables -w -A proxflix-input -p udp -j REJECT --reject-with icmp-port-unreachable
+    # reject any other protocols
+    iptables -w -A proxflix-input -j REJECT --reject-with icmp-proto-unreachable
+
+    # because docker is using DNAT to forward the connection to the container, we
+    # can not filter it via INPUT table. we need to use FORWARD instead, but this
+    # can break the internet connection of the container. as a solution, we only
+    # REJECT the ports we forward to docker.
+    iptables -w -A proxflix-forward -o docker0 -p tcp --dport 443 -j REJECT --reject-with tcp-reset
+    iptables -w -A proxflix-forward -o docker0 -p tcp --dport 80 -j REJECT --reject-with tcp-reset
+    iptables -w -A proxflix-forward -o docker0 -p tcp --dport 53 -j REJECT --reject-with tcp-reset
+    iptables -w -A proxflix-forward -o docker0 -p udp --dport 53 -j REJECT --reject-with icmp-port-unreachable
+
+    if [[ -f /etc/proxflix/allowed_ips ]]; then
+        for x in $(cat /etc/proxflix/allowed_ips); do
+            iptables -w -A proxflix-filter -s "$x" -j ACCEPT
+        done
+    fi
+}
+
+prepare_ip6tables() {
+    reset_ip6tables
+
+    ip6tables -w -N proxflix-input
+    ip6tables -w -N proxflix-forward
+    ip6tables -w -N proxflix-filter
+
+    ip6tables -w -I INPUT -j proxflix-input
+    ip6tables -w -I FORWARD -j proxflix-forward
+    ip6tables -w -A proxflix-input -j proxflix-filter
+    ip6tables -w -A proxflix-forward -o docker0 -j proxflix-filter
+
+    ip6tables -w -A proxflix-input -i lo -j ACCEPT
+    ip6tables -w -A proxflix-input -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    ip6tables -w -A proxflix-input -m conntrack --ctstate INVALID -j DROP
+    ip6tables -A INPUT -p ipv6-icmp --icmpv6-type 128 -m conntrack --ctstate NEW -j ACCEPT
+
+    ip6tables -w -A proxflix-input -p tcp --syn -m conntrack --ctstate NEW --dport 22 -j ACCEPT
+
+    ip6tables -w -A proxflix-input -p tcp -j REJECT --reject-with tcp-reset
+    ip6tables -w -A proxflix-input -p udp -j REJECT --reject-with icmp6-adm-prohibited
+    ip6tables -w -A proxflix-input -j REJECT --reject-with icmp6-adm-prohibited
+
+    ip6tables -w -A proxflix-forward -o docker0 -p tcp --dport 443 -j REJECT --reject-with tcp-reset
+    ip6tables -w -A proxflix-forward -o docker0 -p tcp --dport 80 -j REJECT --reject-with tcp-reset
+    ip6tables -w -A proxflix-forward -o docker0 -p tcp --dport 53 -j REJECT --reject-with tcp-reset
+    ip6tables -w -A proxflix-forward -o docker0 -p udp --dport 53 -j REJECT --reject-with icmp6-adm-prohibited
+}
+
+start_container() {
+    local x
+
+    if is_running proxflix; then
+        echo "Container is already running"
+        return 1
+    fi
+
+    if is_true "${config[iptables]}"; then
+        prepare_iptables
+        prepare_ip6tables
+    fi
+
+    is_container proxflix && docker rm proxflix
+    docker run -i --rm -p 53:53 -p 53:53/udp -p 80:80 -p 443:443 \
+        --cap-add=NET_ADMIN --name proxflix \
+        -e DNS_SERVER="${config[dns]}" \
+        oblique/proxflix
+}
+
+stop_container() {
+    is_running proxflix || return 1
+    docker stop proxflix
+
+    if is_true "${config[iptables]}"; then
+        reset_iptables
+        reset_ip6tables
+    fi
+}
+
+start() {
+    create_systemd_service
+    systemctl start proxflix
+}
+
+stop() {
+    systemctl stop proxflix
+}
+
+enable() {
+    create_systemd_service
+    systemctl enable proxflix
+}
+
+disable() {
+    systemctl disable proxflix
+}
+
+get_allowed_ips() {
+    iptables -w -S proxflix-filter | grep -- "-j ACCEPT\([[:space:]]\|$\)" | \
+        awk '{ sub("/32", "", $4); print $4 }' | sort | uniq
+    return 0
+}
+
+update_allowed_ips_file() {
+    get_allowed_ips > /etc/proxflix/allowed_ips
+}
+
+add_ip() {
+    if ! is_true "${config[iptables]}"; then
+        echo_err "This command is disabled because you have iptables config option as false."
+        return 1
+    fi
+
+    if ! noout iptables -w -C proxflix-filter -s "$1" -j ACCEPT; then
+        iptables -w -A proxflix-filter -s "$1" -j ACCEPT
+        update_allowed_ips_file
+    fi
+
+    return 0
+}
+
+rm_ip() {
+    if ! is_true "${config[iptables]}"; then
+        echo_err "This command is disabled because you have iptables config option as false."
+        return 1
+    fi
+
+    if noout iptables -w -C proxflix-filter -s "$1" -j ACCEPT; then
+        iptables -w -D proxflix-filter -s "$1" -j ACCEPT
+        update_allowed_ips_file
+    fi
+
+    return 0
+}
+
+list_ips() {
+    if ! is_true "${config[iptables]}"; then
+        echo_err "This command is disabled because you have iptables config option as false."
+        return 1
+    fi
+
+    get_allowed_ips
+}
+
+config_get() {
+    local var="$1"
+    shift
+
+    if [[ -z "$var" ]]; then
+        for var in "${!config[@]}"; do
+            echo "${var}=${config[$var]}"
+        done
+    else
+        echo "${config[$var]}"
+    fi
+    return 0
+}
+
+config_set() {
+    local var="$1"
+    shift
+    if [[ -z "$@" ]]; then
+        unset -v 'config[$var]'
+    else
+        config[$var]="$@"
+    fi
+    save_config
+}
+
+if [[ -z "$1" || "$1" == "help" ]]; then
+    usage
+    exit 0
+fi
+
+if [[ $(id -u) -ne 0 ]]; then
+    echo_err "You must run it as root."
+    exit 1
+fi
+
+mkdir -p /etc/proxflix
+load_config
+
+case "$1" in
+    start-container)
+        start_container
+        ;;
+    stop-container)
+        stop_container
+        ;;
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        start
+        ;;
+    enable)
+        enable
+        ;;
+    disable)
+        disable
+        ;;
+    add-ip)
+        shift
+        add_ip "$@"
+        ;;
+    rm-ip)
+        shift
+        rm_ip "$@"
+        ;;
+    list-ips)
+        list_ips
+        ;;
+    config-get)
+        shift
+        config_get "$@"
+        ;;
+    config-set)
+        shift
+        config_set "$@"
+        ;;
+    *)
+        [[ -n "$1" ]] && echo_err "Invalid command: $1"
+        echo_err "For usage run: $0 help"
+        exit 1
+        ;;
+esac
+
+exit $?

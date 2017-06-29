@@ -1,0 +1,9 @@
+#!/bin/sh
+
+if [ ! -d /install ]; then
+    echo "You need to mount the installation directory to /install" >&2
+    echo "You can to it with: '-v /usr/local/bin:/install'" >&2
+    exit 1
+fi
+
+install -m755 /opt/proxflix/proxflix /install/proxflix

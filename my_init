@@ -1,0 +1,15 @@
+#!/bin/sh
+
+# from http://stackoverflow.com/a/32144661
+is_privileged() {
+    ip link add dummy0 type dummy > /dev/null 2>&1 || return 1
+    ip link delete dummy0 > /dev/null 2>&1
+    return 0
+}
+
+if ! is_privileged; then
+    echo "This container needs to be run with '--privileged' or '--cap-add=NET_ADMIN' option" >&2
+    exit 1
+fi
+
+exec supervisord -c /etc/supervisord.conf -n
