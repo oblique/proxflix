@@ -78,5 +78,14 @@ proxflix config-set iptables false
 proxflix restart
 ```
 
+ProxFlix detects if you have a global IPv6 and it creates IPv6 NAT. This
+feature adds an iptables rule even if `iptables` config options is `false`.
+To disable this feature do:
+
+```bash
+proxflix config-set ipv6nat false
+proxflix restart
+```
+
 ## License
 MIT

@@ -7,6 +7,7 @@ typeset -A config
 config=(
     [dns]='8.8.8.8,8.8.4.4'
     [iptables]='true'
+    [ipv6nat]='true'
 )
 
 usage() {
@@ -72,6 +73,16 @@ is_container() {
     [[ -n "$(docker inspect -f '{{.State.Running}}' "$1" 2> /dev/null)" ]]
 }
 
+ipv6_iface() {
+    ip -6 route | grep '^default' | sed 's/.*dev[[:space:]]\+\([^[:space:]]\+\).*/\1/'
+}
+
+has_global_ipv6() {
+    local iface="$(ipv6_iface)"
+    [[ -z "$iface" ]] && return 1
+    ip -6 addr show dev "$iface" | grep -q 'scope global'
+}
+
 create_systemd_service() {
     local service="[Unit]
 After=docker.service
@@ -125,7 +136,7 @@ prepare_iptables() {
     iptables -w -I INPUT -j proxflix-input
     iptables -w -I FORWARD -j proxflix-forward
     iptables -w -A proxflix-input -j proxflix-filter
-    iptables -w -A proxflix-forward -o docker0 -j proxflix-filter
+    iptables -w -A proxflix-forward -o proxflix0 -j proxflix-filter
 
     # block our services for all IPs
     iptables -w -A proxflix-input ! -i lo -p tcp --dport 443 -j REJECT --reject-with tcp-reset
@@ -133,10 +144,10 @@ prepare_iptables() {
     iptables -w -A proxflix-input ! -i lo -p tcp --dport 53 -j REJECT --reject-with tcp-reset
     iptables -w -A proxflix-input ! -i lo -p udp --dport 53 -j REJECT --reject-with icmp-port-unreachable
 
-    iptables -w -A proxflix-forward -o docker0 -p tcp --dport 443 -j REJECT --reject-with tcp-reset
-    iptables -w -A proxflix-forward -o docker0 -p tcp --dport 80 -j REJECT --reject-with tcp-reset
-    iptables -w -A proxflix-forward -o docker0 -p tcp --dport 53 -j REJECT --reject-with tcp-reset
-    iptables -w -A proxflix-forward -o docker0 -p udp --dport 53 -j REJECT --reject-with icmp-port-unreachable
+    iptables -w -A proxflix-forward -o proxflix0 -p tcp --dport 443 -j REJECT --reject-with tcp-reset
+    iptables -w -A proxflix-forward -o proxflix0 -p tcp --dport 80 -j REJECT --reject-with tcp-reset
+    iptables -w -A proxflix-forward -o proxflix0 -p tcp --dport 53 -j REJECT --reject-with tcp-reset
+    iptables -w -A proxflix-forward -o proxflix0 -p udp --dport 53 -j REJECT --reject-with icmp-port-unreachable
 
     # unblock our services for the allowed IPs
     if [[ -f /etc/proxflix/allowed_ips ]]; then
@@ -157,7 +168,7 @@ prepare_ip6tables() {
     ip6tables -w -I INPUT -j proxflix-input
     ip6tables -w -I FORWARD -j proxflix-forward
     ip6tables -w -A proxflix-input -j proxflix-filter
-    ip6tables -w -A proxflix-forward -o docker0 -j proxflix-filter
+    ip6tables -w -A proxflix-forward -o proxflix0 -j proxflix-filter
 
     # block our services for all IPs
     ip6tables -w -A proxflix-input ! -i lo -p tcp --dport 443 -j REJECT --reject-with tcp-reset
@@ -165,10 +176,10 @@ prepare_ip6tables() {
     ip6tables -w -A proxflix-input ! -i lo -p tcp --dport 53 -j REJECT --reject-with tcp-reset
     ip6tables -w -A proxflix-input ! -i lo -p udp --dport 53 -j REJECT --reject-with icmp6-adm-prohibited
 
-    ip6tables -w -A proxflix-forward -o docker0 -p tcp --dport 443 -j REJECT --reject-with tcp-reset
-    ip6tables -w -A proxflix-forward -o docker0 -p tcp --dport 80 -j REJECT --reject-with tcp-reset
-    ip6tables -w -A proxflix-forward -o docker0 -p tcp --dport 53 -j REJECT --reject-with tcp-reset
-    ip6tables -w -A proxflix-forward -o docker0 -p udp --dport 53 -j REJECT --reject-with icmp6-adm-prohibited
+    ip6tables -w -A proxflix-forward -o proxflix0 -p tcp --dport 443 -j REJECT --reject-with tcp-reset
+    ip6tables -w -A proxflix-forward -o proxflix0 -p tcp --dport 80 -j REJECT --reject-with tcp-reset
+    ip6tables -w -A proxflix-forward -o proxflix0 -p tcp --dport 53 -j REJECT --reject-with tcp-reset
+    ip6tables -w -A proxflix-forward -o proxflix0 -p udp --dport 53 -j REJECT --reject-with icmp6-adm-prohibited
 
     # TODO: parse IPv6 from allowed_ips and unblock them
 }
@@ -181,6 +192,22 @@ start_container() {
         return 1
     fi
 
+    noout docker network rm proxflix-net
+
+    # in general IPv6 NAT is not suggested but some VPS providers do not offer
+    # configurable IPv6 address range, so we workaround this.
+    local ipv6_masq=0
+    if is_true "${config[ipv6nat]}" && has_global_ipv6; then
+        local net_opts=(--ipv6 --subnet=fd00::/64)
+        ip6tables -t nat -I POSTROUTING -s fd00::/64 ! -o proxflix0 -j MASQUERADE
+        sysctl -qw net.ipv6.conf.all.forwarding=1
+        ipv6_masq=1
+    fi
+
+    noout docker network create "${net_opts[@]}" \
+        --opt com.docker.network.bridge.name=proxflix0 \
+        proxflix-net
+
     if is_true "${config[iptables]}"; then
         prepare_iptables
         prepare_ip6tables
@@ -189,15 +216,23 @@ start_container() {
     is_container proxflix && docker rm proxflix
     docker run -i --rm -p 53:53 -p 53:53/udp -p 80:80 -p 443:443 \
         --cap-add=NET_ADMIN --name proxflix \
+        --net=proxflix-net \
         -e DNS_SERVER="${config[dns]}" \
         oblique/proxflix
+
+    if is_true "${config[iptables]}"; then
+        reset_iptables
+        reset_ip6tables
+    fi
+
+    if is_true "$ipv6_masq"; then
+        ip6tables -t nat -D POSTROUTING -s fd00::/64 ! -o proxflix0 -j MASQUERADE
+    fi
 }
 
 stop_container() {
     is_running proxflix || return 1
     docker stop proxflix
-    reset_iptables
-    reset_ip6tables
 }
 
 start() {
