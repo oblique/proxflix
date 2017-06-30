@@ -128,10 +128,10 @@ prepare_iptables() {
     iptables -w -A proxflix-forward -o docker0 -j proxflix-filter
 
     # block our services for all IPs
-    iptables -w -A proxflix-input ! -i lo -p tcp --dport 443 -j REJECT tcp-reset
-    iptables -w -A proxflix-input ! -i lo -p tcp --dport 80 -j REJECT tcp-reset
-    iptables -w -A proxflix-input ! -l lo -p tcp --dport 53 -j REJECT tcp-reset
-    iptables -w -A proxflix-input ! -l lo -p udp --dport 53 -j REJECT --reject-with icmp-port-unreachable
+    iptables -w -A proxflix-input ! -i lo -p tcp --dport 443 -j REJECT --reject-with tcp-reset
+    iptables -w -A proxflix-input ! -i lo -p tcp --dport 80 -j REJECT --reject-with tcp-reset
+    iptables -w -A proxflix-input ! -i lo -p tcp --dport 53 -j REJECT --reject-with tcp-reset
+    iptables -w -A proxflix-input ! -i lo -p udp --dport 53 -j REJECT --reject-with icmp-port-unreachable
 
     iptables -w -A proxflix-forward -o docker0 -p tcp --dport 443 -j REJECT --reject-with tcp-reset
     iptables -w -A proxflix-forward -o docker0 -p tcp --dport 80 -j REJECT --reject-with tcp-reset
@@ -160,10 +160,10 @@ prepare_ip6tables() {
     ip6tables -w -A proxflix-forward -o docker0 -j proxflix-filter
 
     # block our services for all IPs
-    ip6tables -w -A proxflix-input ! -i lo -p tcp --dport 443 -j REJECT tcp-reset
-    ip6tables -w -A proxflix-input ! -i lo -p tcp --dport 80 -j REJECT tcp-reset
-    ip6tables -w -A proxflix-input ! -l lo -p tcp --dport 53 -j REJECT tcp-reset
-    ip6tables -w -A proxflix-input ! -l lo -p udp --dport 53 -j REJECT --reject-with icmp6-adm-prohibited
+    ip6tables -w -A proxflix-input ! -i lo -p tcp --dport 443 -j REJECT --reject-with tcp-reset
+    ip6tables -w -A proxflix-input ! -i lo -p tcp --dport 80 -j REJECT --reject-with tcp-reset
+    ip6tables -w -A proxflix-input ! -i lo -p tcp --dport 53 -j REJECT --reject-with tcp-reset
+    ip6tables -w -A proxflix-input ! -i lo -p udp --dport 53 -j REJECT --reject-with icmp6-adm-prohibited
 
     ip6tables -w -A proxflix-forward -o docker0 -p tcp --dport 443 -j REJECT --reject-with tcp-reset
     ip6tables -w -A proxflix-forward -o docker0 -p tcp --dport 80 -j REJECT --reject-with tcp-reset
