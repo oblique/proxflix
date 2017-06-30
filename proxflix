@@ -30,6 +30,7 @@ usage() {
     echo "Config options:"
     echo "  dns <ip-list>           DNS servers (default: 8.8.8.8,8.8.4.4)"
     echo "  iptables <true|false>   Set iptables rules (default: true)"
+    echo "  ipv6nat <true|false>    Create IPv6 NAT (default: true)"
 }
 
 load_config() {
