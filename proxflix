@@ -74,14 +74,74 @@ is_container() {
     [[ -n "$(docker inspect -f '{{.State.Running}}' "$1" 2> /dev/null)" ]]
 }
 
+is_num() {
+    [[ "$1" =~ ^[0-9]+$ ]]
+}
+
+is_ipv4() {
+    local old_ifs="$IFS"
+    local ip="$(echo "$1" | awk -F / '{ print $1 }')"
+    local mask="$(echo "$1" | awk -F / '{ print $2 }')"
+    local ret=0
+    local x
+
+    if [[ -n "$mask" ]]; then
+        if ! is_num "$mask" || [[ "$mask" -lt 0 || "$mask" -gt 32 ]]; then
+            return 1
+        fi
+    fi
+
+    IFS='.'
+    for x in $ip; do
+        if ! is_num "$x" || [[ "$x" -lt 0 || "$x" -gt 255 ]]; then
+            ret=1
+            break
+        fi
+    done
+    IFS="$old_ifs"
+
+    return $ret
+}
+
+is_ipv6() {
+    local old_ifs="$IFS"
+    local ip="$(echo "$1" | awk -F / '{ print $1 }')"
+    local mask="$(echo "$1" | awk -F / '{ print $2 }')"
+    local ret=0
+    local x
+
+    if [[ -n "$mask" ]]; then
+        if ! is_num "$mask" || [[ "$mask" -lt 0 || "$mask" -gt 128 ]]; then
+            return 1
+        fi
+    fi
+
+    IFS=':'
+    for x in $ip; do
+        if ! echo "$x" | grep -qE '^[a-fA-F0-9]{0,4}$'; then
+            ret=1
+            break
+        fi
+    done
+    IFS="$old_ifs"
+
+    return $ret
+}
+
 ipv6_iface() {
     ip -6 route | grep '^default' | sed 's/.*dev[[:space:]]\+\([^[:space:]]\+\).*/\1/'
 }
 
 has_global_ipv6() {
-    local iface="$(ipv6_iface)"
-    [[ -z "$iface" ]] && return 1
-    ip -6 addr show dev "$iface" | grep -q 'scope global'
+    local x
+
+    for x in $(ipv6_iface); do
+        if ip -6 addr show dev "$x" | grep -q 'scope global'; then
+            return 0
+        fi
+    done
+
+    return 1
 }
 
 create_systemd_service() {
@@ -154,7 +214,7 @@ prepare_iptables() {
     if [[ -f /etc/proxflix/allowed_ips ]]; then
         local x
         for x in $(cat /etc/proxflix/allowed_ips); do
-            iptables -w -A proxflix-filter -s "$x" -j ACCEPT
+            allow_ip "$x"
         done
     fi
 }
@@ -182,7 +242,13 @@ prepare_ip6tables() {
     ip6tables -w -A proxflix-forward -o proxflix0 -p tcp --dport 53 -j REJECT --reject-with tcp-reset
     ip6tables -w -A proxflix-forward -o proxflix0 -p udp --dport 53 -j REJECT --reject-with icmp6-adm-prohibited
 
-    # TODO: parse IPv6 from allowed_ips and unblock them
+    # unblock our services for the allowed IPs
+    if [[ -f /etc/proxflix/allowed_ips ]]; then
+        local x
+        for x in $(cat /etc/proxflix/allowed_ips); do
+            allow_ip "$x"
+        done
+    fi
 }
 
 start_container() {
@@ -227,7 +293,9 @@ start_container() {
     fi
 
     if is_true "$ipv6_masq"; then
-        ip6tables -t nat -D POSTROUTING -s fd00::/64 ! -o proxflix0 -j MASQUERADE
+        while noout ip6tables -t nat -D POSTROUTING -s fd00::/64 ! -o proxflix0 -j MASQUERADE; do
+            true
+        done
     fi
 }
 
@@ -237,6 +305,11 @@ stop_container() {
 }
 
 start() {
+    if is_running proxflix; then
+        echo_err 'ProxFlix is not already running.'
+        return 1
+    fi
+
     create_systemd_service
     systemctl start proxflix
 }
@@ -268,11 +341,41 @@ status() {
 get_allowed_ips() {
     iptables -w -S proxflix-filter | grep -- "-j ACCEPT\([[:space:]]\|$\)" | \
         awk '{ sub("/32", "", $4); print $4 }' | sort | uniq
+    ip6tables -w -S proxflix-filter | grep -- "-j ACCEPT\([[:space:]]\|$\)" | \
+        awk '{ sub("/128", "", $4); print $4 }' | sort | uniq
     return 0
 }
 
 update_allowed_ips_file() {
     get_allowed_ips > /etc/proxflix/allowed_ips
+}
+
+allow_ip() {
+    disallow_ip "$1" || return 1
+
+    if is_ipv4 "$1"; then
+        iptables -w -A proxflix-filter -s "$1" -j ACCEPT && return 0
+    elif is_ipv6 "$1"; then
+        ip6tables -w -A proxflix-filter -s "$1" -j ACCEPT && return 0
+    fi
+
+    return 1
+}
+
+disallow_ip() {
+    if is_ipv4 "$1"; then
+        while noout iptables -w -D proxflix-filter -s "$1" -j ACCEPT; do
+            true
+        done
+        return 0
+    elif is_ipv6 "$1"; then
+        while noout ip6tables -w -D proxflix-filter -s "$1" -j ACCEPT; do
+            true
+        done
+        return 0
+    fi
+    return 1
+
 }
 
 add_ip() {
@@ -286,11 +389,7 @@ add_ip() {
         return 1
     fi
 
-    if ! noout iptables -w -C proxflix-filter -s "$1" -j ACCEPT; then
-        iptables -w -A proxflix-filter -s "$1" -j ACCEPT
-        update_allowed_ips_file
-    fi
-
+    allow_ip "$1" && update_allowed_ips_file
     return 0
 }
 
@@ -305,11 +404,7 @@ rm_ip() {
         return 1
     fi
 
-    if noout iptables -w -C proxflix-filter -s "$1" -j ACCEPT; then
-        iptables -w -D proxflix-filter -s "$1" -j ACCEPT
-        update_allowed_ips_file
-    fi
-
+    disallow_ip "$1" && update_allowed_ips_file
     return 0
 }
 

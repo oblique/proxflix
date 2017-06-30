@@ -5,9 +5,15 @@ ipv6_iface() {
 }
 
 has_global_ipv6() {
-    local iface="$(ipv6_iface)"
-    [[ -z "$iface" ]] && return 1
-    ip -6 addr show dev "$iface" | grep -q 'scope global'
+    local x
+
+    for x in $(ipv6_iface); do
+        if ip -6 addr show dev "$x" | grep -q 'scope global'; then
+            return 0
+        fi
+    done
+
+    return 1
 }
 
 resolver_mode=ipv4_only

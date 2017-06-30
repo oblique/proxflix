@@ -1,7 +1,29 @@
 #!/bin/sh
 
-to_upper() {
-    echo "$@" | tr 'a-z' 'A-Z'
+ipv6_iface() {
+    ip -6 route | grep '^default' | sed 's/.*dev[[:space:]]\+\([^[:space:]]\+\).*/\1/'
+}
+
+has_global_ipv6() {
+    local x
+
+    for x in $(ipv6_iface); do
+        if ip -6 addr show dev "$x" | grep -q 'scope global'; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+get_ext_ip() {
+    dig +short myip.opendns.com @resolver1.opendns.com 2> /dev/null
+}
+
+get_ext_ipv6() {
+    if has_global_ipv6; then
+        dig AAAA +short myip.opendns.com @2620:0:ccc::2 2> /dev/null
+    fi
 }
 
 cache_server=0
@@ -28,9 +50,12 @@ if [ "$cache_server" -eq 1 ]; then
     iptables -w -t nat -A OUTPUT -s 127.0.0.1 -p udp -m udp --dport 53 -j REDIRECT --to 5399
     iptables -w -t nat -A OUTPUT -s 127.0.0.1 -p tcp -m tcp --dport 53 -j REDIRECT --to 5399
 else
-    EXT_IP=${EXT_IP:-$(dig +short myip.opendns.com @resolver1.opendns.com 2> /dev/null)}
+    EXT_IP=${EXT_IP:-$(get_ext_ip)}
+    EXT_IPV6=${EXT_IPV6:-$(get_ext_ipv6)}
+
     for x in $(cat /opt/proxflix/domains); do
-        echo "address=/$x/$EXT_IP" >> $conf
+        [[ -n "$EXT_IP" ]] && echo "address=/$x/$EXT_IP" >> $conf
+        [[ -n "$EXT_IPV6" ]] && echo "address=/$x/$EXT_IPV6" >> $conf
     done
 fi
 
