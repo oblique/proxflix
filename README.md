@@ -20,7 +20,7 @@ docker run -v /usr/local/bin:/install venkateshgajula99/test instl
 ```bash
 git clone https://github.com/quickstreamingmedia/proxflix
 cd proxflix
-docker build -t oblique/proxflix .
+docker build -t quickstreamingmedia/proxflix .
 ln -snf $PWD/proxflix /usr/local/bin/proxflix
 ```
 
