@@ -285,7 +285,7 @@ start_container() {
         --cap-add=NET_ADMIN --name proxflix \
         --net=proxflix-net \
         -e DNS_SERVER="${config[dns]}" \
-        oblique/proxflix
+        quickstreamingmedia/proxflix
 
     if is_true "${config[iptables]}"; then
         reset_iptables
