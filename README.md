@@ -20,7 +20,7 @@ docker pull quickstreamingmedia/proxflix
 ```bash
 git clone https://github.com/quickstreamingmedia/proxflix
 cd proxflix
-docker build -t quicckstreamingmedia/proxflix .
+docker build -t quickstreamingmedia/proxflix .
 ln -snf $PWD/proxflix /usr/local/bin/proxflix
 ```
 
