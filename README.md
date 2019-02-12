@@ -11,16 +11,16 @@ ProxFlix is yet another smart DNS solution to bypass geo-blocking.
 ## Install from DockerHub
 
 ```bash
-docker pull oblique/proxflix
-	docker run -v /usr/local/bin:/install oblique/proxflix instl
+docker pull quickstreamingmedia/proxflix
+	docker run -v /usr/local/bin:/install quickstreamingmedia/proxflix instl
 ```
 
 ## Install from GitHub
 
 ```bash
-git clone https://github.com/oblique/proxflix
+git clone https://github.com/quickstreamingmedia/proxflix
 cd proxflix
-docker build -t oblique/proxflix .
+docker build -t quicckstreamingmedia/proxflix .
 ln -snf $PWD/proxflix /usr/local/bin/proxflix
 ```
 
